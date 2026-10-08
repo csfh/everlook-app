@@ -64,6 +64,7 @@
   "build": {
     "appId": "dev.csfh.everlook",
     "productName": "Everlook",
+    "copyright": "Copyright (c) 2026 Christoffer Hallas",
     "executableName": "everlook",
     "files": [
       "out/**/*",
@@ -77,6 +78,10 @@
       {
         "from": "build/tray.png",
         "to": "tray.png"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
       }
     ],
     "protocols": [
