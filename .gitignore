@@ -1,0 +1,14 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+coverage/
+.vite/
+*.tsbuildinfo
+__pycache__/
