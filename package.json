@@ -93,6 +93,7 @@
         "deb"
       ],
       "category": "Utility",
+      "maintainer": "Christoffer Hallas <5760821+csfh@users.noreply.github.com>",
       "icon": "build/icon-512.png",
       "desktop": {
         "entry": {
