@@ -1,6 +1,6 @@
 {
   "name": "everlook",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Desktop uploader for Everlook world data",
   "homepage": "https://everlook.ing",
   "desktopName": "dev.csfh.everlook",
