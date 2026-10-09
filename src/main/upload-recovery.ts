@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
+import { NO_WORLD_DATA_CODE } from './saved-variables'
 import { UNSTABLE_WORLD_FILE_CODE, uploadOutcome, type UploadResult } from './uploader'
 
 export type UploadContext = { origin: string; accountId: number }
@@ -155,6 +156,9 @@ function retryFailure(error: unknown): { status: PendingUpload['status']; delay:
       message: 'Everlook.lua is still changing. Everlook will try again after it settles.',
       setupUrl: null
     }
+  }
+  if (code === NO_WORLD_DATA_CODE) {
+    return { status: 'blocked', delay: null, message: 'Everlook.lua has no collected data to upload yet. Play a little and it will upload.', setupUrl: null }
   }
   if (code === 'ENOENT' || code === 'ENOTDIR') {
     return { status: 'blocked', delay: null, message: 'World file is missing. Restore it and retry.', setupUrl: null }

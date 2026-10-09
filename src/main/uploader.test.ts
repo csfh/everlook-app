@@ -5,6 +5,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { describeUpload, readStableWorldFile, UNSTABLE_WORLD_FILE_CODE, UploadCoordinator, UploadError, uploadOutcome } from './uploader'
 
+/** A world file as it is uploaded: the keys the site reads, written the way the uploader writes them. */
+const slim = (text: string): Buffer => Buffer.from(`EverlookDB = {\r\n["world"] = "${text}",\r\n}\r\n`)
+
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
@@ -51,7 +54,7 @@ describe('stable world file reads', () => {
 describe('UploadCoordinator', () => {
   it('hands Retry-After to persistent recovery instead of making immediate retries', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
-    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => Buffer.from('world'), request, sleep: vi.fn() })
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })
     await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429, retryAfterMs: 60_000 })
     expect(request).toHaveBeenCalledTimes(1)
   })
@@ -62,7 +65,7 @@ describe('UploadCoordinator', () => {
       message: 'Add a passkey and an authenticator app to upload.',
       setup_url: 'https://everlook.example/account/security'
     }), { status: 403 }))
-    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => Buffer.from('world'), request, sleep: vi.fn() })
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })
     await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({
       httpStatus: 403,
       code: 'security_required',
@@ -75,7 +78,7 @@ describe('UploadCoordinator', () => {
       code: 'contributions_revoked',
       message: 'Contributions from this account were revoked.'
     }), { status: 403 }))
-    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => Buffer.from('world'), request, sleep: vi.fn() })
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })
     await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({
       httpStatus: 403,
       code: 'contributions_revoked',
@@ -85,7 +88,7 @@ describe('UploadCoordinator', () => {
 
   it('leaves a plain 403 without a body code', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('denied', { status: 403 }))
-    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => Buffer.from('world'), request, sleep: vi.fn() })
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })
     await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 403, code: null, setupUrl: null })
   })
   it('aborts an in-flight request and does not acknowledge the file', async () => {
@@ -96,14 +99,14 @@ describe('UploadCoordinator', () => {
       init?.signal?.throwIfAborted()
       return new Response(null, { status: 202 })
     })
-    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved, readStable: async () => Buffer.from('world'), request })
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved, readStable: async () => slim('world'), request })
     await expect(uploader.upload('/tmp/Everlook.lua', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
     expect(saved).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledTimes(1)
   })
 
   it('hashes before upload and skips an unchanged world file', async () => {
-    const contents = Buffer.from('worldFile')
+    const contents = slim('worldFile')
     const hash = createHash('sha256').update(contents).digest('hex')
     const request = vi.fn<typeof fetch>()
     const uploader = new UploadCoordinator({
@@ -128,7 +131,7 @@ describe('UploadCoordinator', () => {
   })
 
   it('asks Everlook again when an upload is forced', async () => {
-    const contents = Buffer.from('worldFile')
+    const contents = slim('worldFile')
     const hash = createHash('sha256').update(contents).digest('hex')
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(
       new Response(
@@ -158,7 +161,7 @@ describe('UploadCoordinator', () => {
   })
 
   it('puts the world file to a signed url then completes ingest', async () => {
-    const contents = Buffer.from('new worldFile')
+    const contents = slim('new worldFile')
     const saved = vi.fn()
     const key = '2026/09/16/01ARZ3NDEKTSV4RRFFQ69G5FAV.lua'
     const request = vi
@@ -215,7 +218,7 @@ describe('UploadCoordinator', () => {
     const [putUrl, putInit] = request.mock.calls[1] ?? []
     expect(putUrl).toBe('https://r2.example/2026/09/16/file.lua?X-Amz-Signature=secret')
     expect(putInit?.method).toBe('PUT')
-    expect(putInit?.body).toBe(contents)
+    expect(putInit?.body).toEqual(contents)
     expect(putInit?.headers).toEqual({ 'Content-Type': 'text/x-lua' })
 
     const [completeUrl, completeInit] = request.mock.calls[2] ?? []
@@ -229,7 +232,7 @@ describe('UploadCoordinator', () => {
   })
 
   it('retries transient responses and records a successful hash', async () => {
-    const contents = Buffer.from('new worldFile')
+    const contents = slim('new worldFile')
     const saved = vi.fn()
     const request = vi
       .fn<typeof fetch>()
@@ -267,7 +270,7 @@ describe('UploadCoordinator', () => {
   })
 
   it('skips the object put when Everlook reports a duplicate world file', async () => {
-    const contents = Buffer.from('new worldFile')
+    const contents = slim('new worldFile')
     const request = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -290,7 +293,7 @@ describe('UploadCoordinator', () => {
   })
 
   it('keeps earlier replies when Everlook rejects the queued file', async () => {
-    const contents = Buffer.from('new worldFile')
+    const contents = slim('new worldFile')
     const request = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(

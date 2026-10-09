@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { boundedRequest, retryAfterMilliseconds } from './request'
+import { noWorldDataError, uploadableWorld } from './saved-variables'
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -146,8 +147,12 @@ export class UploadCoordinator {
       throw new Error('Only Everlook.lua files can be uploaded.')
     }
 
-    const contents = await (this.dependencies.readStable ?? readStableWorldFile)(filePath)
+    const file = await (this.dependencies.readStable ?? readStableWorldFile)(filePath)
     signal?.throwIfAborted()
+    // Only the signed upload is sent. The rest of the file is the collection itself,
+    // which the site never reads, and settings that stay on this machine.
+    const contents = uploadableWorld(file)
+    if (contents === null) throw noWorldDataError()
     const hash = createHash('sha256').update(contents).digest('hex')
     if (!force && this.dependencies.previousHash(filePath) === hash) {
       return { hash, uploadedAt: null, unchanged: true, responses: [] }
