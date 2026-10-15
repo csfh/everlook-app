@@ -134,6 +134,7 @@ def release_notes(root: Path, since: str, product: str) -> str:
     else:
         out = git(root, "log", f"--format=%h%x1f%s%x1f%b%x1e", f"{since}..HEAD", "--", *paths)
     grouped: dict[str, list[str]] = {level: [] for level, _ in NOTE_SECTIONS}
+    thanks: dict[str, str] = {}
     for record in out.split("\x1e"):
         if not record.strip():
             continue
@@ -148,11 +149,17 @@ def release_notes(root: Path, since: str, product: str) -> str:
         match = CONVENTIONAL.match(subject)
         text = subject[match.end():] if match else subject
         grouped[level].append(f"- {text} ({short})")
+        # A commit that fixes something a person reported names them in a `Reported-by:` line.
+        for name in re.findall(r"^Reported-by:[ \t]*(.+)$", body, re.MULTILINE):
+            if name.strip():
+                thanks[name.strip().lower()] = name.strip()  # the log runs newest first, so the oldest spelling is kept
     sections = [
         f"## {title}\n\n" + "\n".join(grouped[level])
         for level, title in NOTE_SECTIONS
         if grouped[level]
     ]
+    if sections and thanks:
+        sections.append("## Thanks\n\nFor reporting what these fix: " + ", ".join(thanks[key] for key in sorted(thanks)) + ".")
     return "\n\n".join(sections) + "\n" if sections else "Maintenance release.\n"
 
 

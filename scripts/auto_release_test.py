@@ -166,6 +166,19 @@ class Notes(unittest.TestCase):
         self.assertNotIn("explain", notes)
         self.assertNotIn("release", notes)
 
+    def test_people_who_reported_a_fix_are_thanked_once(self) -> None:
+        self.commit("fix: stop the crash\n\nReported-by: Ana\nReported-by: Bo")
+        self.commit("fix: keep the window open\n\nReported-by: ana")
+        self.commit("docs: explain\n\nReported-by: Cy")
+        notes = auto_release.release_notes(self.repo, TAG + "0.1.0", PRODUCT)
+        self.assertIn("## Thanks", notes)
+        self.assertIn("For reporting what these fix: Ana, Bo.", notes)
+        self.assertNotIn("Cy", notes)
+
+    def test_no_thanks_section_without_a_reporter(self) -> None:
+        self.commit("fix: stop the crash")
+        self.assertNotIn("Thanks", auto_release.release_notes(self.repo, TAG + "0.1.0", PRODUCT))
+
     def test_housekeeping_only_is_a_maintenance_release(self) -> None:
         self.commit("chore: tidy")
         self.assertEqual(auto_release.release_notes(self.repo, TAG + "0.1.0", PRODUCT), "Maintenance release.\n")

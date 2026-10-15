@@ -1,0 +1,46 @@
+name: Something is broken
+description: The desktop app crashes, fails to upload, or does not do what it says.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - Windows
+        - macOS (Intel)
+        - macOS (Apple silicon)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the app's About or settings window.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, in your own words, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log or error text
+      description: Anything the app showed or wrote. Remove your token if it appears.
+      render: text
+  - type: input
+    id: credit
+    attributes:
+      label: Name to credit in the release notes
+      description: Optional. If this is fixed, the release notes thank the name you give here.

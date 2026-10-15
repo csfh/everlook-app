@@ -1,0 +1,11 @@
+name: An idea
+description: Something the desktop app could do, or do better.
+labels: ["idea"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What you would like
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
