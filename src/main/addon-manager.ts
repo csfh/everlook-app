@@ -1,4 +1,5 @@
 import { commonWowRoots } from './discovery'
+import { updateDataPack } from './data-pack'
 import { addonDownloadUrl, discoverAddonsDirectories, inspectInstalledAddon, installAddon } from './addon-install'
 import { loadInstallationCatalog, resolveAddonDirectory, retainInstallStatus } from './installation-catalog'
 import { boundedRequest } from './request'
@@ -18,6 +19,8 @@ export type AddonManagerOptions = {
   /** Installation roots the machine suggests on its own. Defaults to the usual WoW folders. */
   roots?: () => Promise<string[]>
   fetchImpl?: typeof fetch
+  /** Brings an installation's shared catalog up to date. Replaced in tests. */
+  updateDataPack?: typeof updateDataPack
 }
 
 export function idleAddonState(): AddonInstallState {
@@ -66,6 +69,7 @@ export class AddonManager {
     await this.options.publish()
     try {
       await this.applyCatalog()
+      await this.refreshDataPacks()
     } catch (error) {
       this.addonState = {
         ...this.addonState,
@@ -142,6 +146,30 @@ export class AddonManager {
     await this.applyCatalog()
     await this.options.publish()
     return { placed: 1, skipped: 0 }
+  }
+
+  /**
+   * Keeps the shared catalog current in every installation that has the addon. It is best effort: a pack that cannot
+   * be fetched or checked is left as it was, and never stops a refresh, an install or an upload.
+   */
+  private async refreshDataPacks(): Promise<void> {
+    const update = this.options.updateDataPack ?? updateDataPack
+    const baseUrl = this.options.settings.get().baseUrl
+    const seen = new Set<string>()
+    for (const installation of this.installationStates) {
+      const directory = installation.addonsPath
+      if (directory === null || seen.has(directory)) continue
+      seen.add(directory)
+      try {
+        await update({
+          baseUrl,
+          addonsDirectory: directory,
+          fetchImpl: (input, init) => this.request(input, init, 60_000)
+        })
+      } catch (error) {
+        console.warn(`Could not update the Everlook data pack in ${directory}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
 
   private async addonDirectories(): Promise<string[]> {

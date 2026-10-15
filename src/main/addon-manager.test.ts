@@ -47,6 +47,7 @@ function harness(input: {
   token?: string | null
   fetchImpl?: typeof fetch
   roots?: () => Promise<string[]>
+  updateDataPack?: AddonManagerOptions['updateDataPack']
 } = {}) {
   let settings = { baseUrl: 'https://everlook.ing', autoWatch: true, selectedFiles: [], uploads: {}, installationRoots: [], ...input.settings } as Settings
   let published = 0
@@ -60,7 +61,8 @@ function harness(input: {
     userDataDirectory: () => os.tmpdir(),
     publish: async () => { published += 1 },
     roots: input.roots ?? (async () => []),
-    fetchImpl: input.fetchImpl ?? (async () => publishedResponse())
+    fetchImpl: input.fetchImpl ?? (async () => publishedResponse()),
+    ...(input.updateDataPack ? { updateDataPack: input.updateDataPack } : {})
   })
   return { manager, settings: () => settings, published: () => published }
 }
@@ -87,6 +89,26 @@ describe('AddonManager', () => {
     expect(manager.installations).toHaveLength(1)
     expect(manager.installations[0]?.addonsPath).toBe(addonsDirectory)
     expect(manager.addon).toMatchObject({ status: 'behind', version: '0.4.0', publishedVersion: '1.2.3' })
+  })
+
+  it('keeps the shared catalog current in each installation that has the addon, and a failure there stops nothing', async () => {
+    const root = await makeTemp()
+    const { file, addonsDirectory } = await writeInstall(root)
+    const calls: string[] = []
+    const failing = harness({
+      settings: { selectedFiles: [file] },
+      updateDataPack: async (options) => { calls.push(options.addonsDirectory); throw new Error('The data pack manifest answered 503.') }
+    })
+
+    await failing.manager.refresh()
+
+    expect(calls).toEqual([addonsDirectory])
+    expect(failing.manager.addon.error).toBeNull()
+    expect(failing.manager.installations).toHaveLength(1)
+
+    const missing = harness({ updateDataPack: async () => { throw new Error('called') } })
+    await expect(missing.manager.refresh()).resolves.toBeUndefined()
+    expect(missing.manager.addon.status).toBe('missing')
   })
 
   it('records an error when the roots cannot be read and recovers on the next refresh', async () => {
