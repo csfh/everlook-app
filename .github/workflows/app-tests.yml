@@ -46,3 +46,11 @@ jobs:
       - run: npm test
       - run: npm run test:desktop
       - run: npm run test:release
+      - name: Lines that need a second look
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${BASE}"
+          git diff FETCH_HEAD HEAD | python3 scripts/risky_uses.py --profile app >> "${GITHUB_STEP_SUMMARY}"

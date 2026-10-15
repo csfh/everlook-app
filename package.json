@@ -17,7 +17,7 @@
     "package": "npm run build && electron-builder --publish never",
     "desktop:install": "bash scripts/install-linux.sh",
     "desktop:uninstall": "bash scripts/uninstall-linux.sh",
-    "test:release": "python scripts/release_artifacts_test.py && node --test scripts/package-smoke.test.mjs"
+    "test:release": "python scripts/release_artifacts_test.py && python scripts/risky_uses_test.py && node --test scripts/package-smoke.test.mjs"
   },
   "keywords": [
     "electron",
