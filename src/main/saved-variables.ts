@@ -135,3 +135,102 @@ export function uploadableWorld(contents: Buffer): Buffer | null {
   parts.push('}\r\n')
   return Buffer.from(parts.join(''), 'latin1')
 }
+
+export type AddonReport = { id: string; at: number | null; text: string; facts: string }
+
+const LUA_ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t', '\\': '\\', '"': '"', "'": "'", a: '\x07', b: '\b', f: '\f', v: '\v' }
+
+/** The string whose quote opens at `open` in latin1 text, as UTF-8 text again. */
+function luaString(text: string, open: number): string {
+  const end = skipString(text, open)
+  const raw = text.slice(open + 1, end - 1)
+  const bytes: number[] = []
+  for (let at = 0; at < raw.length; at += 1) {
+    const character = raw.charAt(at)
+    if (character !== '\\') {
+      bytes.push(raw.charCodeAt(at))
+      continue
+    }
+    at += 1
+    const next = raw.charAt(at)
+    const escaped = LUA_ESCAPES[next]
+    if (escaped !== undefined) {
+      bytes.push(escaped.charCodeAt(0))
+    } else if (/\d/.test(next)) {
+      const digits = /^\d{1,3}/.exec(raw.slice(at))?.[0] ?? next
+      bytes.push(Number(digits) & 0xff)
+      at += digits.length - 1
+    } else {
+      bytes.push(next.charCodeAt(0))
+    }
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
+/**
+ * The tables in a list. The game writes a list's entries without a key, each
+ * followed by a comment such as `-- [1]`, so they are not in `children`.
+ */
+function listed(text: string, open: number): number[] {
+  const found: number[] = []
+  let at = open + 1
+  for (;;) {
+    at = skipSpace(text, at, ',;')
+    if (at >= text.length) throw new Unreadable('table is not closed')
+    if (text[at] === '}') return found
+    if (text[at] === '[') {
+      let depth = 0
+      do {
+        if (text[at] === '"') at = skipString(text, at)
+        else {
+          depth += text[at] === '[' ? 1 : text[at] === ']' ? -1 : 0
+          at += 1
+        }
+      } while (depth > 0 && at < text.length)
+      at = skipSpace(text, at)
+      if (text[at] === '=') at = skipValue(text, skipSpace(text, at + 1))
+      continue
+    }
+    if (text[at] === '{') found.push(at)
+    at = skipValue(text, at)
+  }
+}
+
+function reportOf(text: string, open: number): AddonReport | null {
+  const fields = children(text, open)
+  const textField = (key: string): string | null => {
+    const span = fields.get(key)
+    return span !== undefined && text[span[0]] === '"' ? luaString(text, span[0]) : null
+  }
+  const id = textField('id')
+  const words = textField('text')
+  const facts = textField('facts')
+  if (id === null || words === null || facts === null) return null
+  const stamp = fields.get('at')
+  const at = stamp === undefined ? Number.NaN : Number(text.slice(stamp[0], stamp[1]).trim())
+  return { id, at: Number.isFinite(at) ? at : null, text: words, facts }
+}
+
+/**
+ * The problem reports a player wrote in the game: the entries of the top-level
+ * `reports` table. A table that cannot be followed gives none, and so does an
+ * entry that is missing a field.
+ */
+export function reportsIn(contents: Buffer): AddonReport[] {
+  const text = contents.toString('latin1')
+  const start = /\bEverlookDB\s*=\s*\{/.exec(text)
+  if (start === null) return []
+  try {
+    const span = children(text, start.index + start[0].length - 1).get('reports')
+    if (span === undefined || text[span[0]] !== '{') return []
+    const reports: AddonReport[] = []
+    for (const from of listed(text, span[0])) {
+      const report = reportOf(text, from)
+      if (report !== null) reports.push(report)
+    }
+    return reports.slice(0, 5)
+  } catch (error) {
+    if (error instanceof Unreadable) return []
+    throw error
+  }
+}

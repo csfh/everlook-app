@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { boundedRequest, retryAfterMilliseconds } from './request'
-import { noWorldDataError, uploadableWorld } from './saved-variables'
+import { noWorldDataError, reportsIn, uploadableWorld, type AddonReport } from './saved-variables'
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -121,6 +121,8 @@ type SignedUpload = {
 
 export class UploadCoordinator {
   private readonly queues = new Map<string, Promise<UploadResult>>()
+  /** Report ids already sent in this run. The site files a report once whatever is sent, so a restart may send them again. */
+  private readonly sentReports = new Set<string>()
 
   constructor(private readonly dependencies: Dependencies) { }
 
@@ -151,6 +153,7 @@ export class UploadCoordinator {
     signal?.throwIfAborted()
     // Only the signed upload is sent. The rest of the file is the collection itself,
     // which the site never reads, and settings that stay on this machine.
+    await this.sendReports(reportsIn(file), signal)
     const contents = uploadableWorld(file)
     if (contents === null) throw noWorldDataError()
     const hash = createHash('sha256').update(contents).digest('hex')
@@ -210,6 +213,29 @@ export class UploadCoordinator {
     const uploadedAt = new Date().toISOString()
     await this.dependencies.saved(filePath, hash, uploadedAt)
     return { hash, uploadedAt, unchanged: false, responses }
+  }
+
+  /**
+   * Problem reports go on their own and never hold up the world upload: a report that cannot be sent now is
+   * sent with the next sync, since it stays in the saved file until the addon drops it.
+   */
+  private async sendReports(reports: AddonReport[], signal?: AbortSignal): Promise<void> {
+    const fresh = reports.filter((report) => !this.sentReports.has(report.id))
+    if (fresh.length === 0) return
+    try {
+      const token = await this.dependencies.token()
+      if (token === null) return
+      signal?.throwIfAborted()
+      const response = await (this.dependencies.request ?? fetch)(`${this.dependencies.baseUrl()}/api/desktop/addon/reports`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reports: fresh }),
+        signal: signal ?? null
+      })
+      if (response.ok) for (const report of fresh) this.sentReports.add(report.id)
+    } catch (error) {
+      if (signal?.aborted) throw error
+    }
   }
 
   private async authorizedJson(

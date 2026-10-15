@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_WORLD_DATA_CODE, noWorldDataError, uploadableWorld } from './saved-variables'
+import { NO_WORLD_DATA_CODE, noWorldDataError, reportsIn, uploadableWorld } from './saved-variables'
 
 const file = (body: string): Buffer => Buffer.from(`EverlookDB = {\r\n${body}\r\n}\r\n`, 'latin1')
 const upload = (contents: Buffer): string | null => uploadableWorld(contents)?.toString('latin1') ?? null
@@ -92,5 +92,33 @@ describe('uploadableWorld', () => {
 describe('noWorldDataError', () => {
   it('carries a code the recovery queue recognises', () => {
     expect((noWorldDataError() as Error & { code: string }).code).toBe(NO_WORLD_DATA_CODE)
+  })
+})
+
+describe('reportsIn', () => {
+  const reports = [
+    '["reports"] = {',
+    '{ ["id"] = "a1b2c3d4", ["at"] = 1760000000, ["text"] = "Vendor sells \\"nothing\\"\\nin Goldshire, cafÃ© } {", ["facts"] = "Everlook 0.30.0\\nMap Elwynn Forest" }, -- [1]',
+    '{ ["id"] = "e5f6a7b8", ["at"] = 1760000100, ["text"] = "Second", ["facts"] = "x" }, -- [2]',
+    '{ ["id"] = "no-facts", ["text"] = "dropped" },',
+    '},'
+  ].join('\r\n')
+
+  it('reads each report, with escapes and UTF-8 undone, and drops an entry that lacks a field', () => {
+    expect(reportsIn(file(segmented(reports)))).toEqual([
+      { id: 'a1b2c3d4', at: 1760000000, text: 'Vendor sells "nothing"\nin Goldshire, café } {', facts: 'Everlook 0.30.0\nMap Elwynn Forest' },
+      { id: 'e5f6a7b8', at: 1760000100, text: 'Second', facts: 'x' }
+    ])
+  })
+
+  it('finds reports in a file that has no world yet, and none in one that has no reports', () => {
+    expect(reportsIn(file(reports))).toHaveLength(2)
+    expect(reportsIn(file(segmented()))).toEqual([])
+    expect(reportsIn(Buffer.from('nothing here', 'latin1'))).toEqual([])
+  })
+
+  it('ignores a reports key inside the collected rows and a table that cannot be followed', () => {
+    expect(reportsIn(file('["raw"] = { ["npcs"] = { ["reports"] = { { ["id"] = "zzzz", ["text"] = "t", ["facts"] = "f" } } } },'))).toEqual([])
+    expect(reportsIn(file('["reports"] = { { ["id"] = "abcd'))).toEqual([])
   })
 })

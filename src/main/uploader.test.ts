@@ -86,6 +86,28 @@ describe('UploadCoordinator', () => {
     })
   })
 
+  it('sends the problem reports in the file once, even when the file holds no world yet', async () => {
+    const withReports = Buffer.from('EverlookDB = {\r\n["reports"] = {\r\n{ ["id"] = "a1b2c3d4", ["at"] = 1, ["text"] = "Broken", ["facts"] = "Everlook 1" }, -- [1]\r\n},\r\n}\r\n', 'latin1')
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ stored: 1, new: 1 }), { status: 200 }))
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => withReports, request, sleep: vi.fn() })
+    await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ code: 'ENODATA' })
+    await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ code: 'ENODATA' })
+    expect(request).toHaveBeenCalledTimes(1)
+    const [url, init] = request.mock.calls[0]!
+    expect(url).toBe('https://everlook.example/api/desktop/addon/reports')
+    expect(JSON.parse(String(init?.body))).toEqual({ reports: [{ id: 'a1b2c3d4', at: 1, text: 'Broken', facts: 'Everlook 1' }] })
+  })
+
+  it('does not let a failed report send stop the world upload, and tries the report again', async () => {
+    const withBoth = Buffer.from('EverlookDB = {\r\n["reports"] = {\r\n{ ["id"] = "a1b2c3d4", ["at"] = 1, ["text"] = "Broken", ["facts"] = "f" }, -- [1]\r\n},\r\n["manifest"] = "2;1;b;l;1;v;npcs.0.0=1:' + 'a'.repeat(64) + '",\r\n}\r\n', 'latin1')
+    const request = vi.fn<typeof fetch>().mockImplementation(async (input) =>
+      String(input).endsWith('/reports') ? new Response('down', { status: 500 }) : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+    const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => withBoth, request, sleep: vi.fn() })
+    await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+    await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+    expect(request.mock.calls.filter(([url]) => String(url).endsWith('/reports'))).toHaveLength(2)
+  })
+
   it('leaves a plain 403 without a body code', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('denied', { status: 403 }))
     const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })
