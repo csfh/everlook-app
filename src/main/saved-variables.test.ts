@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_WORLD_DATA_CODE, noWorldDataError, reportsIn, uploadableWorld } from './saved-variables'
+import { journeyIn, NO_WORLD_DATA_CODE, noWorldDataError, reportsIn, uploadableWorld } from './saved-variables'
 
 const file = (body: string): Buffer => Buffer.from(`EverlookDB = {\r\n${body}\r\n}\r\n`, 'latin1')
 const upload = (contents: Buffer): string | null => uploadableWorld(contents)?.toString('latin1') ?? null
@@ -120,5 +120,57 @@ describe('reportsIn', () => {
   it('ignores a reports key inside the collected rows and a table that cannot be followed', () => {
     expect(reportsIn(file('["raw"] = { ["npcs"] = { ["reports"] = { { ["id"] = "zzzz", ["text"] = "t", ["facts"] = "f" } } } },'))).toEqual([])
     expect(reportsIn(file('["reports"] = { { ["id"] = "abcd'))).toEqual([])
+  })
+})
+
+describe('journeyIn', () => {
+  const token = 'aaaa1111bbbb2222'
+  const signature = 'f'.repeat(64)
+  const journey = [
+    '["journey"] = {',
+    '["v"] = 1,',
+    '["enabled"] = true,',
+    '["signer"] = "0123456789abcdef",',
+    '["characters"] = {',
+    `["${token}"] = { ["chunks"] = {`,
+    `{ ["from"] = 1, ["to"] = 500, ["payload"] = "2c.JJJJ", ["signature"] = "${signature}" }, -- [1]`,
+    `{ ["from"] = 501, ["to"] = 512, ["payload"] = "2r.KKKK", ["signature"] = "${signature}" }, -- [2]`,
+    '{ ["from"] = 513, ["payload"] = "2r.LLLL" }, -- [3]',
+    '} },',
+    '["not-a-token"] = { ["chunks"] = { { ["from"] = 1, ["to"] = 1, ["payload"] = "2r.D", ["signature"] = "00" } } },',
+    '},',
+    '},'
+  ].join('\r\n')
+
+  it('reads the signer and each character\'s chunks, and drops an entry that lacks a field or a token that is not one', () => {
+    expect(journeyIn(file(segmented(journey)))).toEqual({
+      signer: '0123456789abcdef',
+      characters: [{
+        token,
+        chunks: [
+          { from: 1, to: 500, payload: '2c.JJJJ', signature },
+          { from: 501, to: 512, payload: '2r.KKKK', signature }
+        ]
+      }]
+    })
+  })
+
+  it('finds a journey in a file that has no world yet, and none where there is none or no signer', () => {
+    expect(journeyIn(file(journey))?.characters).toHaveLength(1)
+    expect(journeyIn(file(segmented()))).toBeNull()
+    expect(journeyIn(Buffer.from('nothing here', 'latin1'))).toBeNull()
+    expect(journeyIn(file(journey.replace('["signer"] = "0123456789abcdef",', '')))).toBeNull()
+  })
+
+  it('ignores a journey key inside the collected rows and a table that cannot be followed', () => {
+    expect(journeyIn(file(`["raw"] = { ["npcs"] = { ["journey"] = { ["signer"] = "0123456789abcdef", ["characters"] = {} } } },`))).toBeNull()
+    expect(journeyIn(file('["journey"] = { ["signer"] = "0123456789abcdef", ["characters"] = { ["aaaa1111bbbb2222"] = { ["chunks"] = { {'))).toBeNull()
+  })
+
+  it('never travels with the world upload', () => {
+    const sent = upload(file(segmented(journey))) ?? ''
+    expect(sent).not.toContain('journey')
+    expect(sent).not.toContain('2c.JJJJ')
+    expect(sent).not.toContain(token)
   })
 })

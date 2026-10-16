@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { boundedRequest, retryAfterMilliseconds } from './request'
-import { noWorldDataError, reportsIn, uploadableWorld, type AddonReport } from './saved-variables'
+import { journeyIn, noWorldDataError, reportsIn, uploadableWorld, type AddonReport, type Journey } from './saved-variables'
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -26,6 +26,9 @@ export async function readStableWorldFile(
 
 /** Recovery retries this. The file can keep changing past the short settle window. */
 export const UNSTABLE_WORLD_FILE_CODE = 'EUNSTABLE'
+
+/** What the site takes in one journey request (docs/contracts.md, "Journey"). */
+const JOURNEY_CHUNKS_PER_REQUEST = 10
 
 function unstableWorldFileError(): Error {
   return Object.assign(
@@ -106,6 +109,9 @@ type Dependencies = {
   token: () => Promise<string | null>
   baseUrl: () => string
   saved: (filePath: string, hash: string, uploadedAt: string) => Promise<void>
+  /** The highest journey seq the site acknowledged for each character token, kept across restarts. */
+  journeyCursors?: () => Record<string, number>
+  journeySaved?: (cursors: Record<string, number>) => Promise<void>
   readStable?: (filePath: string) => Promise<Buffer>
   request?: typeof fetch
   sleep?: (milliseconds: number) => Promise<void>
@@ -154,6 +160,7 @@ export class UploadCoordinator {
     // Only the signed upload is sent. The rest of the file is the collection itself,
     // which the site never reads, and settings that stay on this machine.
     await this.sendReports(reportsIn(file), signal)
+    await this.sendJourney(journeyIn(file), signal)
     const contents = uploadableWorld(file)
     if (contents === null) throw noWorldDataError()
     const hash = createHash('sha256').update(contents).digest('hex')
@@ -233,6 +240,41 @@ export class UploadCoordinator {
         signal: signal ?? null
       })
       if (response.ok) for (const report of fresh) this.sentReports.add(report.id)
+    } catch (error) {
+      if (signal?.aborted) throw error
+    }
+  }
+
+  /**
+   * A character's journey goes to its own endpoint and never holds up the world upload. Only chunks above what the
+   * site last acknowledged are sent, ten at a time, oldest first. The first refusal ends the run, so a chunk the site
+   * will not take is not sent again until the next sync, and the saved file keeps everything until then.
+   */
+  private async sendJourney(journey: Journey | null, signal?: AbortSignal): Promise<void> {
+    const { journeyCursors, journeySaved } = this.dependencies
+    if (journey === null || journeyCursors === undefined) return
+    const cursors = { ...journeyCursors() }
+    const pending = journey.characters.flatMap(({ token, chunks }) =>
+      chunks.filter((chunk) => chunk.to > (cursors[token] ?? 0)).sort((a, b) => a.from - b.from))
+    if (pending.length === 0) return
+    try {
+      const token = await this.dependencies.token()
+      if (token === null) return
+      for (let at = 0; at < pending.length; at += JOURNEY_CHUNKS_PER_REQUEST) {
+        signal?.throwIfAborted()
+        const response = await (this.dependencies.request ?? fetch)(`${this.dependencies.baseUrl()}/api/desktop/addon/journey`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signer: journey.signer, chunks: pending.slice(at, at + JOURNEY_CHUNKS_PER_REQUEST) }),
+          signal: signal ?? null
+        })
+        if (!response.ok) return
+        const acknowledged = ((await response.json().catch(() => null)) as { acked?: Record<string, unknown> } | null)?.acked ?? {}
+        for (const [character, seq] of Object.entries(acknowledged)) {
+          if (typeof seq === 'number' && Number.isInteger(seq) && seq > (cursors[character] ?? 0)) cursors[character] = seq
+        }
+        await journeySaved?.({ ...cursors })
+      }
     } catch (error) {
       if (signal?.aborted) throw error
     }

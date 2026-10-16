@@ -53,6 +53,8 @@ export type Settings = {
   notifications?: { uploadFailures: boolean; updates: boolean }
   nativeBattleNetPath?: string | null
   uploadScopes?: Record<string, Record<string, { hash: string; uploadedAt: string }>>
+  /** For each account, the highest journey seq the site acknowledged for each character token. */
+  journeyCursors?: Record<string, Record<string, number>>
   /** World files the user stopped watching. Discovery does not add them back. */
   ignoredFiles?: string[]
 }

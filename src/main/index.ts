@@ -794,6 +794,15 @@ if (!hasInstanceLock) {
       previousHash: (filePath) => currentUploads()[filePath]?.hash ?? null,
       token: () => tokenStore.get(),
       baseUrl: () => settingsStore.get().baseUrl,
+      journeyCursors: () => {
+        const current = context()
+        return current === null ? {} : settingsStore.get().journeyCursors?.[uploadScope(current)] ?? {}
+      },
+      journeySaved: async (cursors) => {
+        const current = context()
+        if (current === null) return
+        await settingsStore.update({ journeyCursors: { ...settingsStore.get().journeyCursors, [uploadScope(current)]: cursors } })
+      },
       saved: async (filePath, hash, uploadedAt) => {
         const settings = settingsStore.get()
         const current = context()

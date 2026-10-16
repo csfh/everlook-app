@@ -79,6 +79,7 @@ const settingsSchema = z.object({
   notifications: z.object({ uploadFailures: z.boolean(), updates: z.boolean() }).optional(),
   nativeBattleNetPath: pathField.nullable().optional(),
   uploadScopes: z.record(z.string(), z.record(z.string(), z.object({ hash: z.string().length(64), uploadedAt: z.string() }))).optional(),
+  journeyCursors: z.record(z.string(), z.record(z.string(), z.number().int().positive())).optional(),
   accountSigner: z.string().regex(/^[0-9a-f]{16}$/).optional(),
   ignoredFiles: z.array(z.string()).optional()
 })
@@ -95,6 +96,7 @@ function defaults(homeDirectory = os.homedir()): Settings {
     notifications: { uploadFailures: false, updates: false },
     nativeBattleNetPath: null,
     uploadScopes: {},
+    journeyCursors: {},
     ignoredFiles: [],
     wowLauncher: defaultWowLauncherSettings(homeDirectory)
   }
@@ -168,6 +170,7 @@ export class SettingsStore {
       notifications: parsed.notifications ?? { uploadFailures: false, updates: false },
       nativeBattleNetPath: parsed.nativeBattleNetPath ?? null,
       uploadScopes: parsed.uploadScopes ?? {},
+      journeyCursors: parsed.journeyCursors ?? {},
       ignoredFiles: parsed.ignoredFiles ?? [],
       ...(parsed.desktopAccount ? { desktopAccount: parsed.desktopAccount } : {}),
       baseUrl,

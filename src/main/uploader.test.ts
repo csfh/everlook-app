@@ -108,6 +108,105 @@ describe('UploadCoordinator', () => {
     expect(request.mock.calls.filter(([url]) => String(url).endsWith('/reports'))).toHaveLength(2)
   })
 
+  describe('the journey', () => {
+    const token = 'aaaa1111bbbb2222'
+    const second = 'cccc3333dddd4444'
+    const signature = 'f'.repeat(64)
+    const chunk = (from: number, to: number): string => `{ ["from"] = ${from}, ["to"] = ${to}, ["payload"] = "2r.P${from}", ["signature"] = "${signature}" }, -- [x]`
+    const journeyFile = (...chunks: string[]): Buffer => Buffer.from(
+      `EverlookDB = {\r\n["journey"] = { ["v"] = 1, ["signer"] = "0123456789abcdef", ["characters"] = {\r\n["${token}"] = { ["chunks"] = {\r\n${chunks.join('\r\n')}\r\n} },\r\n} },\r\n["manifest"] = "2;1;b;l;1;v;npcs.0.0=1:${'a'.repeat(64)}",\r\n}\r\n`, 'latin1')
+    const journeyCalls = (request: ReturnType<typeof vi.fn<typeof fetch>>) => request.mock.calls.filter(([url]) => String(url).endsWith('/api/desktop/addon/journey'))
+    const coordinator = (contents: Buffer, request: typeof fetch, cursors: Record<string, number>, journeySaved = vi.fn(async () => undefined)) => ({
+      journeySaved,
+      uploader: new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => contents, request, sleep: vi.fn(), journeyCursors: () => cursors, journeySaved })
+    })
+
+    it('sends the chunks above the cursor with the signer, and remembers what the site acknowledged', async () => {
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ stored: 2, new: 7, acked: { [token]: 1000 } }), { status: 200 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(journeyFile(chunk(1, 500), chunk(501, 1000), chunk(1001, 1200)), request, { [token]: 500 })
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(journeyCalls(request)).toHaveLength(1)
+      const [url, init] = journeyCalls(request)[0]!
+      expect(url).toBe('https://everlook.example/api/desktop/addon/journey')
+      expect(JSON.parse(String(init?.body))).toEqual({
+        signer: '0123456789abcdef',
+        chunks: [
+          { from: 501, to: 1000, payload: '2r.P501', signature },
+          { from: 1001, to: 1200, payload: '2r.P1001', signature }
+        ]
+      })
+      expect(journeySaved).toHaveBeenCalledWith({ [token]: 1000 })
+    })
+
+    it('sends nothing when every chunk is at or below the cursor', async () => {
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(journeyFile(chunk(1, 500)), request, { [token]: 500 })
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(journeyCalls(request)).toHaveLength(0)
+      expect(journeySaved).not.toHaveBeenCalled()
+    })
+
+    it('sends at most ten chunks a request, oldest first', async () => {
+      const chunks = Array.from({ length: 12 }, (_, index) => chunk(index * 10 + 1, index * 10 + 10))
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+        if (!String(input).endsWith('/journey')) return new Response('busy', { status: 429, headers: { 'Retry-After': '60' } })
+        const sent = JSON.parse(String(init?.body)).chunks as { to: number }[]
+        return new Response(JSON.stringify({ stored: sent.length, new: 0, acked: { [token]: sent.at(-1)!.to } }), { status: 200 })
+      })
+      const { uploader, journeySaved } = coordinator(journeyFile(...chunks), request, {})
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(journeyCalls(request).map(([, init]) => JSON.parse(String(init?.body)).chunks.length)).toEqual([10, 2])
+      expect(journeySaved).toHaveBeenLastCalledWith({ [token]: 120 })
+    })
+
+    it('does not let a failed journey send stop the world upload, and sends the chunks again next time', async () => {
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response('down', { status: 500 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(journeyFile(chunk(1, 500)), request, {})
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(journeyCalls(request)).toHaveLength(2)
+      expect(journeySaved).not.toHaveBeenCalled()
+    })
+
+    it('stops sending journey chunks for the run when the site refuses one, so a bad chunk is not hammered', async () => {
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ code: 'quota_exceeded' }), { status: 429, headers: { 'Retry-After': '3600' } })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const chunks = Array.from({ length: 12 }, (_, index) => chunk(index * 10 + 1, index * 10 + 10))
+      const { uploader } = coordinator(journeyFile(...chunks), request, {})
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(journeyCalls(request)).toHaveLength(1)
+    })
+
+    it('tracks each character on its own', async () => {
+      const both = Buffer.from(
+        `EverlookDB = {\r\n["journey"] = { ["signer"] = "0123456789abcdef", ["characters"] = {\r\n["${token}"] = { ["chunks"] = { ${chunk(1, 5)} } },\r\n["${second}"] = { ["chunks"] = { ${chunk(1, 9)} } },\r\n} },\r\n["manifest"] = "2;1;b;l;1;v;npcs.0.0=1:${'a'.repeat(64)}",\r\n}\r\n`, 'latin1')
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ stored: 1, new: 1, acked: { [second]: 9 } }), { status: 200 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(both, request, { [token]: 5 })
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(JSON.parse(String(journeyCalls(request)[0]![1]?.body)).chunks).toHaveLength(1)
+      expect(journeySaved).toHaveBeenCalledWith({ [token]: 5, [second]: 9 })
+    })
+  })
+
   it('leaves a plain 403 without a body code', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('denied', { status: 403 }))
     const uploader = new UploadCoordinator({ previousHash: () => null, token: async () => 'a'.repeat(64), baseUrl: () => 'https://everlook.example', saved: vi.fn(), readStable: async () => slim('world'), request, sleep: vi.fn() })

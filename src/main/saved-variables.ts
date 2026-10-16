@@ -234,3 +234,60 @@ export function reportsIn(contents: Buffer): AddonReport[] {
     throw error
   }
 }
+
+export type JourneyChunk = { from: number; to: number; payload: string; signature: string }
+export type Journey = { signer: string; characters: { token: string; chunks: JourneyChunk[] }[] }
+
+const CHARACTER_TOKEN = /^[0-9a-f]{16}$/
+
+function chunkOf(text: string, open: number): JourneyChunk | null {
+  const fields = children(text, open)
+  const textField = (key: string): string | null => {
+    const span = fields.get(key)
+    return span !== undefined && text[span[0]] === '"' ? luaString(text, span[0]) : null
+  }
+  const numberField = (key: string): number | null => {
+    const span = fields.get(key)
+    const value = span === undefined ? Number.NaN : Number(text.slice(span[0], span[1]).trim())
+    return Number.isInteger(value) && value > 0 ? value : null
+  }
+  const from = numberField('from')
+  const to = numberField('to')
+  const payload = textField('payload')
+  const signature = textField('signature')
+  if (from === null || to === null || payload === null || signature === null) return null
+  return { from, to, payload, signature }
+}
+
+/**
+ * The journey a player turned on in the game: the signed chunks of each character, and the signer that proves whose
+ * they are. It is personal data and is sent to its own endpoint, never inside the world upload. A table that cannot
+ * be followed, a token that is not one, a chunk that lacks a field and a file with no signer give nothing.
+ */
+export function journeyIn(contents: Buffer): Journey | null {
+  const text = contents.toString('latin1')
+  const start = /\bEverlookDB\s*=\s*\{/.exec(text)
+  if (start === null) return null
+  try {
+    const span = children(text, start.index + start[0].length - 1).get('journey')
+    if (span === undefined || text[span[0]] !== '{') return null
+    const fields = children(text, span[0])
+    const signerSpan = fields.get('signer')
+    const signer = signerSpan !== undefined && text[signerSpan[0]] === '"' ? luaString(text, signerSpan[0]) : null
+    const charactersSpan = fields.get('characters')
+    if (signer === null || !/^[0-9a-f]{16}$/.test(signer) || charactersSpan === undefined || text[charactersSpan[0]] !== '{') return null
+
+    const characters: Journey['characters'] = []
+    for (const [token, [open]] of children(text, charactersSpan[0])) {
+      if (!CHARACTER_TOKEN.test(token) || text[open] !== '{') continue
+      const chunksSpan = children(text, open).get('chunks')
+      if (chunksSpan === undefined || text[chunksSpan[0]] !== '{') continue
+      const chunks = listed(text, chunksSpan[0]).map((from) => chunkOf(text, from)).filter((chunk): chunk is JourneyChunk => chunk !== null)
+      if (chunks.length > 0) characters.push({ token, chunks })
+    }
+    return characters.length === 0 ? null : { signer, characters }
+  } catch (error) {
+    if (error instanceof Unreadable) return null
+    throw error
+  }
+}
