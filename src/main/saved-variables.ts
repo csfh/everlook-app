@@ -235,7 +235,8 @@ export function reportsIn(contents: Buffer): AddonReport[] {
   }
 }
 
-export type JourneyChunk = { from: number; to: number; payload: string; signature: string }
+/** A chunk the addon has packed. It has no signature until its turn to be signed comes, and is not ready before then. */
+export type JourneyChunk = { from: number; to: number; payload: string; signature: string | null }
 export type Journey = { signer: string; characters: { token: string; chunks: JourneyChunk[] }[] }
 
 const CHARACTER_TOKEN = /^[0-9a-f]{16}$/
@@ -254,15 +255,15 @@ function chunkOf(text: string, open: number): JourneyChunk | null {
   const from = numberField('from')
   const to = numberField('to')
   const payload = textField('payload')
-  const signature = textField('signature')
-  if (from === null || to === null || payload === null || signature === null) return null
-  return { from, to, payload, signature }
+  if (from === null || to === null || payload === null) return null
+  return { from, to, payload, signature: textField('signature') }
 }
 
 /**
  * The journey a player turned on in the game: the signed chunks of each character, and the signer that proves whose
- * they are. It is personal data and is sent to its own endpoint, never inside the world upload. A table that cannot
- * be followed, a token that is not one, a chunk that lacks a field and a file with no signer give nothing.
+ * they are. It is personal data and is sent to its own endpoint, never inside the world upload. A chunk with no
+ * signature is kept, as a gap: it is not ready, and the ones after it must wait. A table that cannot be followed, a
+ * token that is not one, a chunk that lacks a range or a payload and a file with no signer give nothing.
  */
 export function journeyIn(contents: Buffer): Journey | null {
   const text = contents.toString('latin1')

@@ -207,6 +207,46 @@ describe('UploadCoordinator', () => {
       expect(journeyCalls(request)).toHaveLength(1)
     })
 
+    it('stops at the first chunk that is not signed yet, so the cursor never jumps over it', async () => {
+      const unsigned = '{ ["from"] = 501, ["to"] = 1000, ["payload"] = "2r.P501" }, -- [x]'
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ stored: 1, new: 1, rejected: 0 }), { status: 200 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(journeyFile(chunk(1, 500), unsigned, chunk(1001, 1200)), request, {})
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(JSON.parse(String(journeyCalls(request)[0]![1]?.body)).chunks).toEqual([{ from: 1, to: 500, payload: '2r.P1', signature }])
+      expect(journeySaved).toHaveBeenCalledWith({ [token]: 500 })
+    })
+
+    it('sends a chunk once it is signed, after the ones before it', async () => {
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ stored: 2, new: 1, rejected: 0 }), { status: 200 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(journeyFile(chunk(501, 1000), chunk(1001, 1200)), request, { [token]: 500 })
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(JSON.parse(String(journeyCalls(request)[0]![1]?.body)).chunks.map((sent: { from: number }) => sent.from)).toEqual([501, 1001])
+      expect(journeySaved).toHaveBeenCalledWith({ [token]: 1200 })
+    })
+
+    it('does not let one character\'s gap hold back another character', async () => {
+      const gap = `["${token}"] = { ["chunks"] = { { ["from"] = 1, ["to"] = 500, ["payload"] = "2r.P1" } } },`
+      const ready = `["${second}"] = { ["chunks"] = { ${chunk(1, 9)} } },`
+      const both = Buffer.from(`EverlookDB = {\r\n["journey"] = { ["signer"] = "0123456789abcdef", ["characters"] = {\r\n${gap}\r\n${ready}\r\n} },\r\n["manifest"] = "2;1;b;l;1;v;npcs.0.0=1:${'a'.repeat(64)}",\r\n}\r\n`, 'latin1')
+      const request = vi.fn<typeof fetch>().mockImplementation(async (input) => String(input).endsWith('/journey')
+        ? new Response(JSON.stringify({ stored: 1, new: 1, rejected: 0 }), { status: 200 })
+        : new Response('busy', { status: 429, headers: { 'Retry-After': '60' } }))
+      const { uploader, journeySaved } = coordinator(both, request, {})
+
+      await expect(uploader.upload('/tmp/Everlook.lua')).rejects.toMatchObject({ httpStatus: 429 })
+
+      expect(JSON.parse(String(journeyCalls(request)[0]![1]?.body)).chunks).toHaveLength(1)
+      expect(journeySaved).toHaveBeenCalledWith({ [second]: 9 })
+    })
+
     it('tracks each character on its own', async () => {
       const both = Buffer.from(
         `EverlookDB = {\r\n["journey"] = { ["signer"] = "0123456789abcdef", ["characters"] = {\r\n["${token}"] = { ["chunks"] = { ${chunk(1, 5)} } },\r\n["${second}"] = { ["chunks"] = { ${chunk(1, 9)} } },\r\n} },\r\n["manifest"] = "2;1;b;l;1;v;npcs.0.0=1:${'a'.repeat(64)}",\r\n}\r\n`, 'latin1')

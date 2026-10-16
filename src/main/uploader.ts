@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { boundedRequest, retryAfterMilliseconds } from './request'
-import { journeyIn, noWorldDataError, reportsIn, uploadableWorld, type AddonReport, type Journey } from './saved-variables'
+import { journeyIn, noWorldDataError, reportsIn, uploadableWorld, type AddonReport, type Journey, type JourneyChunk } from './saved-variables'
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -26,6 +26,8 @@ export async function readStableWorldFile(
 
 /** Recovery retries this. The file can keep changing past the short settle window. */
 export const UNSTABLE_WORLD_FILE_CODE = 'EUNSTABLE'
+
+type SignedJourneyChunk = JourneyChunk & { signature: string }
 
 /** What the site takes in one journey request (docs/contracts.md, "Journey"). */
 const JOURNEY_CHUNKS_PER_REQUEST = 10
@@ -256,8 +258,17 @@ export class UploadCoordinator {
     const { journeyCursors, journeySaved } = this.dependencies
     if (journey === null || journeyCursors === undefined) return
     const cursors = { ...journeyCursors() }
-    const pending = journey.characters.flatMap(({ token, chunks }) =>
-      chunks.filter((chunk) => chunk.to > (cursors[token] ?? 0)).sort((a, b) => a.from - b.from).map((chunk) => ({ token, chunk })))
+    // For each character the unbroken run of signed chunks above the cursor. A chunk with no signature is not ready, and
+    // the ones after it wait: the cursor moves past whatever is sent, so sending a later chunk would skip this one for good.
+    const pending = journey.characters.flatMap(({ token, chunks }) => {
+      const run: { token: string; chunk: SignedJourneyChunk }[] = []
+      for (const chunk of [...chunks].sort((a, b) => a.from - b.from)) {
+        if (chunk.to <= (cursors[token] ?? 0)) continue
+        if (chunk.signature === null) break
+        run.push({ token, chunk: { ...chunk, signature: chunk.signature } })
+      }
+      return run
+    })
     if (pending.length === 0) return
     try {
       const token = await this.dependencies.token()

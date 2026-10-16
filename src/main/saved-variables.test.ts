@@ -136,20 +136,22 @@ describe('journeyIn', () => {
     `{ ["from"] = 1, ["to"] = 500, ["payload"] = "2c.JJJJ", ["signature"] = "${signature}" }, -- [1]`,
     `{ ["from"] = 501, ["to"] = 512, ["payload"] = "2r.KKKK", ["signature"] = "${signature}" }, -- [2]`,
     '{ ["from"] = 513, ["payload"] = "2r.LLLL" }, -- [3]',
+    '{ ["from"] = 513, ["to"] = 520, ["payload"] = "2r.MMMM" }, -- [4]',
     '} },',
     '["not-a-token"] = { ["chunks"] = { { ["from"] = 1, ["to"] = 1, ["payload"] = "2r.D", ["signature"] = "00" } } },',
     '},',
     '},'
   ].join('\r\n')
 
-  it('reads the signer and each character\'s chunks, and drops an entry that lacks a field or a token that is not one', () => {
+  it('reads the signer and each character\'s chunks, keeps one that is not signed yet as a gap, and drops an entry that lacks a range or a payload or a token that is not one', () => {
     expect(journeyIn(file(segmented(journey)))).toEqual({
       signer: '0123456789abcdef',
       characters: [{
         token,
         chunks: [
           { from: 1, to: 500, payload: '2c.JJJJ', signature },
-          { from: 501, to: 512, payload: '2r.KKKK', signature }
+          { from: 501, to: 512, payload: '2r.KKKK', signature },
+          { from: 513, to: 520, payload: '2r.MMMM', signature: null }
         ]
       }]
     })
