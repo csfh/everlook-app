@@ -109,7 +109,7 @@ type Dependencies = {
   token: () => Promise<string | null>
   baseUrl: () => string
   saved: (filePath: string, hash: string, uploadedAt: string) => Promise<void>
-  /** The highest journey seq the site acknowledged for each character token, kept across restarts. */
+  /** The highest journey seq the site has decided on for each character token, kept across restarts. */
   journeyCursors?: () => Record<string, number>
   journeySaved?: (cursors: Record<string, number>) => Promise<void>
   readStable?: (filePath: string) => Promise<Buffer>
@@ -247,31 +247,33 @@ export class UploadCoordinator {
 
   /**
    * A character's journey goes to its own endpoint and never holds up the world upload. Only chunks above what the
-   * site last acknowledged are sent, ten at a time, oldest first. The first refusal ends the run, so a chunk the site
-   * will not take is not sent again until the next sync, and the saved file keeps everything until then.
+   * site last decided on are sent, ten at a time, oldest first. A 200 means the site decided on every chunk in the
+   * request, filed or rejected, so the cursor moves past all of them: a chunk the site will never take (an old
+   * secret, a rule it breaks) must not stand in front of the ones after it. Any other answer ends the run, and the
+   * saved file keeps everything until the next sync.
    */
   private async sendJourney(journey: Journey | null, signal?: AbortSignal): Promise<void> {
     const { journeyCursors, journeySaved } = this.dependencies
     if (journey === null || journeyCursors === undefined) return
     const cursors = { ...journeyCursors() }
     const pending = journey.characters.flatMap(({ token, chunks }) =>
-      chunks.filter((chunk) => chunk.to > (cursors[token] ?? 0)).sort((a, b) => a.from - b.from))
+      chunks.filter((chunk) => chunk.to > (cursors[token] ?? 0)).sort((a, b) => a.from - b.from).map((chunk) => ({ token, chunk })))
     if (pending.length === 0) return
     try {
       const token = await this.dependencies.token()
       if (token === null) return
       for (let at = 0; at < pending.length; at += JOURNEY_CHUNKS_PER_REQUEST) {
         signal?.throwIfAborted()
+        const batch = pending.slice(at, at + JOURNEY_CHUNKS_PER_REQUEST)
         const response = await (this.dependencies.request ?? fetch)(`${this.dependencies.baseUrl()}/api/desktop/addon/journey`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ signer: journey.signer, chunks: pending.slice(at, at + JOURNEY_CHUNKS_PER_REQUEST) }),
+          body: JSON.stringify({ signer: journey.signer, chunks: batch.map(({ chunk }) => chunk) }),
           signal: signal ?? null
         })
         if (!response.ok) return
-        const acknowledged = ((await response.json().catch(() => null)) as { acked?: Record<string, unknown> } | null)?.acked ?? {}
-        for (const [character, seq] of Object.entries(acknowledged)) {
-          if (typeof seq === 'number' && Number.isInteger(seq) && seq > (cursors[character] ?? 0)) cursors[character] = seq
+        for (const { token: character, chunk } of batch) {
+          if (chunk.to > (cursors[character] ?? 0)) cursors[character] = chunk.to
         }
         await journeySaved?.({ ...cursors })
       }
